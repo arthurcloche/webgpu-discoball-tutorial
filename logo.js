@@ -149,6 +149,7 @@ function addObjects() {
   const computedPosition = new Float32Array(particleCount * 3);
   const originalPosition = new Float32Array(particleCount * 3);
   const computedNormals = new Float32Array(particleCount * 3);
+  const computedRotation = new Float32Array(particleCount * 3); // x, y, z rotation angles
   for (let i = 0; i < particleCount; i++) {
     computedPosition[i * 3 + 0] = particlePosition[i * 3 + 0];
     computedPosition[i * 3 + 1] = particlePosition[i * 3 + 1];
@@ -161,6 +162,10 @@ function addObjects() {
     computedNormals[i * 3 + 0] = particleNormals[i * 3 + 0];
     computedNormals[i * 3 + 1] = particleNormals[i * 3 + 1];
     computedNormals[i * 3 + 2] = particleNormals[i * 3 + 2];
+
+    computedRotation[i * 3 + 0] = 0; // initial rotation x
+    computedRotation[i * 3 + 1] = 0; // initial rotation y
+    computedRotation[i * 3 + 2] = 0; // initial rotation z
   }
 
   const geos = [];
@@ -179,40 +184,37 @@ function addObjects() {
   const positions = instancedArray(computedPosition, "vec3");
   const originalPositions = instancedArray(originalPosition, "vec3");
   const normals = instancedArray(computedNormals, "vec3");
-  const twopi = uniform(Math.PI * 2);
+  const rotations = instancedArray(computedRotation, "vec3");
+  const pushstrength = uniform(0.7);
+  const range = uniform(0.75);
 
   computeUpdate = Fn(() => {
     const position = positions.element(instanceIndex);
     const originalPos = originalPositions.element(instanceIndex);
     const normal = normals.element(instanceIndex);
+    const rotation = rotations.element(instanceIndex);
     const psdrd = hash(instanceIndex);
-
-    // Mouse interaction
     const distanceFromMouse = originalPos.sub(mousePosition).length();
-    const maxRange = float(0.5);
-    const pushStrength = float(0.8);
+    const maxRange = range;
+    const pushStrength = pushstrength;
     const influence = smoothstep(maxRange, float(0), distanceFromMouse);
     const pushDirection = normal.normalize();
     let pushedPos = originalPos.add(
       pushDirection.mul(pushStrength).mul(influence)
     );
-
-    // Secondary animation - subtle sine waves for life
-    const sine = sin(psdrd.mul(twopi).add(float(time.mul(0.03))))
-      .add(1)
-      .mul(0.5);
-    const smallsine = sin(psdrd.mul(113).add(float(time.mul(0.7))))
-      .add(1)
-      .mul(0.01);
-    pushedPos = pushedPos.add(smallsine);
-    // Combine mouse interaction with subtle breathing animation
-    const breathingOffset = pushDirection.mul(smallsine);
-    const finalPos = mix(originalPos, pushedPos, influence).add(
-      breathingOffset
+    const mouseDir = originalPos.sub(mousePosition).normalize();
+    const rotationStrength = influence.mul(
+      distanceFromMouse.mul(psdrd.add(Math.PI))
+    ); // Max 90 degrees
+    const targetRotation = vec3(
+      mouseDir.y.mul(rotationStrength),
+      mouseDir.x.mul(rotationStrength),
+      0
     );
-
+    const finalPos = mix(originalPos, pushedPos, influence);
     const returnSpeed = float(0.08);
     position.assign(mix(position, finalPos, returnSpeed));
+    rotation.assign(mix(rotation, targetRotation, returnSpeed));
   })().compute(particleCount);
 
   const lookAt = Fn(([position, target]) => {
@@ -229,11 +231,41 @@ function addObjects() {
     const id = attribute("particleindex");
     const position = positions.element(id);
     const normal = normals.element(id);
+    const rotationAngles = rotations.element(id);
+
+    // Surface alignment (disco ball mirror orientation)
     const forward = normal.normalize();
     const right = forward.cross(vec3(0, 1, 0)).normalize();
     const up = right.cross(forward).normalize();
-    const rotation = mat3(right, up, forward);
-    pos.xyz = rotation.mul(pos.xyz);
+    const surfaceRotation = mat3(right, up, forward);
+
+    // Additional rotation based on mouse interaction
+    const cosX = cos(rotationAngles.x);
+    const sinX = sin(rotationAngles.x);
+    const cosY = cos(rotationAngles.y);
+    const sinY = sin(rotationAngles.y);
+    const cosZ = cos(rotationAngles.z);
+    const sinZ = sin(rotationAngles.z);
+
+    const rotX = mat3(
+      vec3(1, 0, 0),
+      vec3(0, cosX, negate(sinX)),
+      vec3(0, sinX, cosX)
+    );
+    const rotY = mat3(
+      vec3(cosY, 0, sinY),
+      vec3(0, 1, 0),
+      vec3(negate(sinY), 0, cosY)
+    );
+    const rotZ = mat3(
+      vec3(cosZ, negate(sinZ), 0),
+      vec3(sinZ, cosZ, 0),
+      vec3(0, 0, 1)
+    );
+
+    // Combine surface alignment with mouse-based rotation
+    const combinedRotation = surfaceRotation.mul(rotX).mul(rotY).mul(rotZ);
+    pos.xyz = combinedRotation.mul(pos.xyz);
     pos.addAssign(position);
 
     return pos;
